@@ -242,10 +242,12 @@ function diagramParts(svg, th) {
     const colored = String(svg || "")
       .replace(/#ink\b/gi, th.text).replace(/#accent\b/gi, th.accent)
       .replace(/#soft\b/gi, th.soft).replace(/#bg\b/gi, th.bg).replace(/#sub\b/gi, th.sub);
-    const doc = new DOMParser().parseFromString(colored, "image/svg+xml");
+    // Make sure the SVG namespace is declared in the TEXT before parsing —
+    // Safari drops the drawing if it is added afterwards.
+    const withNs = /<svg[^>]*\sxmlns=/i.test(colored) ? colored : colored.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+    const doc = new DOMParser().parseFromString(withNs, "image/svg+xml");
     const root = doc.documentElement;
     if (root && root.nodeName.toLowerCase() === "svg") {
-      if (!root.getAttribute("xmlns")) root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
       let vb = (root.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
       if (vb.length !== 4 || vb.some(isNaN)) {
         const vw = parseFloat(root.getAttribute("width")) || 1000, vh = parseFloat(root.getAttribute("height")) || 700;
@@ -263,8 +265,13 @@ function diagramParts(svg, th) {
         t.remove();
         return o;
       });
-      root.setAttribute("width", vb[2]); root.setAttribute("height", vb[3]);
-      const str = new XMLSerializer().serializeToString(root);
+      // Build the picture from the original text (no re-serialising — Safari
+      // can mangle that): drop the labels, force the namespace and a pixel size.
+      let str = withNs.replace(/<text\b[^>]*>[\s\S]*?<\/text>/gi, "");
+      str = str.replace(/<svg\b([^>]*)>/i, (m, attrs) => {
+        const a = attrs.replace(/\s(width|height|viewBox)\s*=\s*("[^"]*"|'[^']*')/gi, "");
+        return '<svg' + a + ' viewBox="' + vb.join(" ") + '" width="' + vb[2] + '" height="' + vb[3] + '">';
+      });
       out = { url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(str), texts, vb };
     }
   } catch (e) { out = null; }
