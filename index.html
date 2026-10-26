@@ -7,7 +7,7 @@
 <title>Carousel Studio — Love's in the Hair</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Lato:ital,wght@0,300;0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,500;0,600;1,500&family=Oooh+Baby&family=Shadows+Into+Light+Two&family=Give+You+Glory&family=Permanent+Marker&family=Allura&family=Sacramento&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Lato:ital,wght@0,300;0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,500;0,600;1,500&family=Shadows+Into+Light+Two&display=swap" rel="stylesheet" />
 <style>
   html, body { margin: 0; padding: 0; background: #FCF9F6; }
   #loading { font-family: 'Playfair Display', Georgia, serif; color: #20272D;
@@ -80,6 +80,7 @@ const TEMPLATES = [
   { id: "stat", label: "Stat" },
   { id: "statement", label: "Quote" },
   { id: "tip", label: "Tip" },
+  { id: "diagram", label: "Diagram" },
   { id: "photo", label: "Photo" },
   { id: "cta", label: "CTA" },
 ];
@@ -195,6 +196,87 @@ function isLight(hex) {
   return 0.299 * r + 0.587 * g + 0.114 * b > 150;
 }
 
+/* ── headline + script block ──────────────────────────────────────────────
+   Measures the script's real ink so it never collides with the headline,
+   and lets the script sit ABOVE or BELOW the headline (slide.scriptPos). */
+function scriptMetrics(ctx, F, text, size, maxW) {
+  let s = size;
+  ctx.font = F.script(s);
+  while (s > size * 0.5 && ctx.measureText(text).width > maxW) { s -= 1; ctx.font = F.script(s); }
+  const m = ctx.measureText(text);
+  return { text, size: s, asc: m.actualBoundingBoxAscent || s * 0.75, desc: m.actualBoundingBoxDescent || s * 0.25 };
+}
+function headScriptHeight(n, hs, lh, acc, gap) {
+  let H = (n - 1) * hs * lh + hs * 0.74;
+  if (acc) H += gap + acc.asc + acc.desc;
+  return H;
+}
+// Draws the block starting at yTop; returns the y of the lowest ink.
+function drawHeadScript(ctx, F, lines, hs, lh, spacing, cx, yTop, acc, pos, gap, textColor, accentColor) {
+  let y = yTop;
+  const drawAcc = () => {
+    ctx.fillStyle = accentColor; ctx.font = F.script(acc.size); ctx.textAlign = "center";
+    ctx.fillText(acc.text, cx, y + acc.asc); ctx.textAlign = "left";
+    y += acc.asc + acc.desc;
+  };
+  if (acc && pos === "top") { drawAcc(); y += gap; }
+  ctx.fillStyle = textColor; ctx.font = F.display(hs);
+  let base = y + hs * 0.74;
+  lines.forEach((ln, i) => { fillSpaced(ctx, ln.toUpperCase(), cx, base, spacing, "center"); if (i < lines.length - 1) base += hs * lh; });
+  y = base;
+  if (acc && pos !== "top") { y += gap; drawAcc(); }
+  return y;
+}
+
+/* ── DIAGRAM support ──────────────────────────────────────────────────────
+   A diagram is plain SVG pasted in. Colours are written as #ink, #accent,
+   #soft and #bg so the drawing follows the slide's theme. <text> labels are
+   pulled out and drawn on the canvas so they use the brand fonts
+   (font="script" for handwriting, font-weight="bold" for bold Lato). */
+const DIAGRAM_CACHE = new Map();
+function diagramParts(svg, th) {
+  const key = th.id + "|" + (svg || "");
+  if (DIAGRAM_CACHE.has(key)) return DIAGRAM_CACHE.get(key);
+  let out = null;
+  try {
+    const colored = String(svg || "")
+      .replace(/#ink\b/gi, th.text).replace(/#accent\b/gi, th.accent)
+      .replace(/#soft\b/gi, th.soft).replace(/#bg\b/gi, th.bg).replace(/#sub\b/gi, th.sub);
+    const doc = new DOMParser().parseFromString(colored, "image/svg+xml");
+    const root = doc.documentElement;
+    if (root && root.nodeName.toLowerCase() === "svg") {
+      if (!root.getAttribute("xmlns")) root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      let vb = (root.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+      if (vb.length !== 4 || vb.some(isNaN)) {
+        const vw = parseFloat(root.getAttribute("width")) || 1000, vh = parseFloat(root.getAttribute("height")) || 700;
+        vb = [0, 0, vw, vh]; root.setAttribute("viewBox", vb.join(" "));
+      }
+      const texts = [...root.querySelectorAll("text")].map((t) => {
+        const o = {
+          text: t.textContent.trim(),
+          x: parseFloat(t.getAttribute("x")) || 0, y: parseFloat(t.getAttribute("y")) || 0,
+          size: parseFloat(t.getAttribute("font-size")) || 30,
+          anchor: t.getAttribute("text-anchor") || "start",
+          fill: t.getAttribute("fill") || th.text,
+          font: (t.getAttribute("font") || t.getAttribute("class") || "") + " " + (t.getAttribute("font-weight") || ""),
+        };
+        t.remove();
+        return o;
+      });
+      root.setAttribute("width", vb[2]); root.setAttribute("height", vb[3]);
+      const str = new XMLSerializer().serializeToString(root);
+      out = { url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(str), texts, vb };
+    }
+  } catch (e) { out = null; }
+  DIAGRAM_CACHE.set(key, out);
+  return out;
+}
+function diagramUrlFor(slide) {
+  if (slide.template !== "diagram" || !slide.svg) return null;
+  const p = diagramParts(slide.svg, THEMES[slide.theme] || THEMES.cream);
+  return p ? p.url : null;
+}
+
 /* ── THE RENDERER — draws one slide at pixel width `w` (height derived) ─── */
 function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc) {
   const k = w / BASE_W;
@@ -208,7 +290,7 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
     serif: (s) => font(600, s, "'Playfair Display'"),  // Minerva Modern-ish, editorial
     serifIt: (s) => font(500, s, "'Playfair Display'", "italic"),
     numeral: (s) => font(500, s, "'Playfair Display'"),  // clear, legible digits
-    script: (s) => font(400, s, "'" + (opts.scriptFont || "Allura") + "'"),  // Benedict stand-in — user picks
+    script: (s) => font(400, s, "'Shadows Into Light Two'"),  // Miranda's script — locked
     body: (s) => font(400, s, "Lato"),                  // her actual font
     bodyMed: (s) => font(700, s, "Lato"),
   };
@@ -248,29 +330,18 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
     const blockTop = cTop + (slide.kicker ? P(54) : 0);
     const { size: hs, lines: hl } = fitText(ctx, slide.headline || "", width, P(560), 1.05, P(120), P(52), F.display);
     const accent = (slide.accentWord || "").trim();
-    const accSize = accent ? Math.min(P(150), hs * 1.28) : 0;
-    const blockH = hl.length * hs * 1.05 + (accent ? accSize * 0.72 : 0);
-    let y = (blockTop + (h - P(196))) / 2 - blockH / 2 + hs;
-    ctx.fillStyle = th.text;
-    ctx.font = F.display(hs);
-    for (const ln of hl) { fillSpaced(ctx, ln.toUpperCase(), cx, y, P(1.5), "center"); y += hs * 1.05; }
-    if (accent) {
-      ctx.fillStyle = th.accent; ctx.font = F.script(accSize); ctx.textAlign = "center";
-      ctx.fillText(accent, cx, y + accSize * 0.3); ctx.textAlign = "left";
-    }
+    const acc = accent ? scriptMetrics(ctx, F, accent, Math.min(P(150), hs * 1.28), w - P(100)) : null;
+    const gap = P(22);
+    const blockH = headScriptHeight(hl.length, hs, 1.05, acc, gap);
+    const yTop = (blockTop + (h - P(196))) / 2 - blockH / 2;
+    drawHeadScript(ctx, F, hl, hs, 1.05, P(1.5), cx, yTop, acc, slide.scriptPos, gap, th.text, th.accent);
   }
 
   /* ---- LIST ---- */
   else if (slide.template === "list") {
     const { size: ts, lines: tl } = fitText(ctx, slide.title || "", width, P(240), 1.05, P(84), P(40), F.display);
-    let y = top + ts;
-    ctx.fillStyle = th.text;
-    for (const ln of tl) { fillSpaced(ctx, ln.toUpperCase(), cx, y, P(1.5), "center"); y += ts * 1.05; }
-    if ((slide.accentWord || "").trim()) {
-      const as = Math.min(P(92), ts * 1.15);
-      ctx.fillStyle = th.accent; ctx.font = F.script(as); ctx.textAlign = "center";
-      ctx.fillText(slide.accentWord.trim(), cx, y + as * 0.5); ctx.textAlign = "left"; y += as * 0.7;
-    }
+    const tAcc = (slide.accentWord || "").trim() ? scriptMetrics(ctx, F, slide.accentWord.trim(), Math.min(P(92), ts * 1.15), w - P(100)) : null;
+    let y = drawHeadScript(ctx, F, tl, ts, 1.05, P(1.5), cx, top, tAcc, slide.scriptPos, P(16), th.text, th.accent) + P(14);
     y += P(38); goldRule(y); y += P(56);
     const items = String(slide.items || "").split("\n").map((s) => s.trim()).filter(Boolean);
     const n = Math.max(items.length, 1);
@@ -351,14 +422,8 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
   /* ---- STAT (donut chart) — donut + legend always fit above the footer ---- */
   else if (slide.template === "stat") {
     const { size: ts, lines: tl } = fitText(ctx, slide.title || "", width, P(220), 1.05, P(78), P(38), F.display);
-    let y = top + ts;
-    ctx.fillStyle = th.text;
-    for (const ln of tl) { fillSpaced(ctx, ln.toUpperCase(), cx, y, P(1.5), "center"); y += ts * 1.05; }
-    if ((slide.accentWord || "").trim()) {
-      const as = Math.min(P(86), ts * 1.15);
-      ctx.fillStyle = th.accent; ctx.font = F.script(as); ctx.textAlign = "center";
-      ctx.fillText(slide.accentWord.trim(), cx, y + as * 0.5); ctx.textAlign = "left"; y += as * 0.7;
-    }
+    const tAcc = (slide.accentWord || "").trim() ? scriptMetrics(ctx, F, slide.accentWord.trim(), Math.min(P(86), ts * 1.15), w - P(100)) : null;
+    let y = drawHeadScript(ctx, F, tl, ts, 1.05, P(1.5), cx, top, tAcc, slide.scriptPos, P(16), th.text, th.accent) + P(14);
     const titleBottom = y + P(20);
 
     const segs = String(slide.segments || "").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
@@ -439,14 +504,15 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
     const { size: hs, lines: hl } = fitText(ctx, slide.heading || "", width - P(80), P(230), 1.05, P(76), P(40), F.display);
     const headH = hl.length * hs * 1.05;
     const accent = (slide.accentWord || "").trim();
-    const accSize = accent ? Math.min(P(84), hs * 1.12) : 0;
-    const ruleGap = P(34), ruleToBody = P(50);
+    const acc = accent ? scriptMetrics(ctx, F, accent, Math.min(P(84), hs * 1.12), w - P(100)) : null;
+    const hsGap = P(18);
+    const ruleGap = P(48), ruleToBody = P(50);
     const paras = String(slide.body || "").split("\n").map((s) => s.trim()).filter(Boolean);
 
     // The usable area is everything ABOVE the footer logo; centering the block
     // here gives equal breathing room top and bottom (no drift, no empty pool).
     const footTop = h - P(196);
-    const fixedH = headH + (accent ? accSize * 0.95 : 0) + ruleGap + ruleToBody;
+    const fixedH = headScriptHeight(hl.length, hs, 1.05, acc, hsGap) + ruleGap + ruleToBody;
     const avail = footTop - top;
     let bsz = P(40);
     const measureBody = (sz) => {
@@ -459,12 +525,7 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
     const blockH = fixedH + bodyH;
 
     let y = (top + footTop) / 2 - blockH / 2;
-    ctx.fillStyle = th.text; ctx.font = F.display(hs);
-    for (const ln of hl) { fillSpaced(ctx, ln.toUpperCase(), cx, y + hs * 0.82, P(1.5), "center"); y += hs * 1.05; }
-    if (accent) {
-      ctx.fillStyle = th.accent; ctx.font = F.script(accSize); ctx.textAlign = "center";
-      ctx.fillText(accent, cx, y + accSize * 0.5); ctx.textAlign = "left"; y += accSize * 0.95;
-    }
+    y = drawHeadScript(ctx, F, hl, hs, 1.05, P(1.5), cx, y, acc, slide.scriptPos, hsGap, th.text, th.accent);
     y += ruleGap; goldRule(y, 44); y += ruleToBody;
     // body — centered for balance, bigger for readability
     ctx.fillStyle = th.text; ctx.font = F.body(bsz); ctx.textAlign = "center";
@@ -525,13 +586,14 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
     const { size: hs, lines: hl } = fitText(ctx, slide.heading || "", width, P(330), 1.05, P(96), P(44), F.display);
     const headH = hl.length * hs * 1.05;
     const accent = (slide.accentWord || "").trim();
-    const accSize = accent ? Math.min(P(120), hs * 1.3) : 0;
+    const acc = accent ? scriptMetrics(ctx, F, accent, Math.min(P(120), hs * 1.3), w - P(100)) : null;
+    const hsGap = P(20);
     let subLines = [];
     if ((slide.subtext || "").trim()) { ctx.font = F.body(P(28)); subLines = wrapLines(ctx, slide.subtext.trim(), width - P(80)); }
 
     const avH = av ? P(230) + P(54) : 0;
-    const blockH = avH + P(40) + P(60) + headH + (accent ? accSize * 0.95 : 0) + P(50) + (subLines.length ? subLines.length * P(28) * 1.4 + P(40) : 0);
-    let y = (top + (bottom - P(120))) / 2 - blockH / 2;
+    const blockH = avH + P(23) + P(36) + headScriptHeight(hl.length, hs, 1.05, acc, hsGap) + (subLines.length ? P(44) + subLines.length * P(28) * 1.4 : 0);
+    let y = (top + (h - P(196))) / 2 - blockH / 2 + P(18);
 
     if (av) {
       const r = P(115);
@@ -544,16 +606,60 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
     }
     ctx.fillStyle = th.sub; ctx.font = F.bodyMed(P(23));
     fillSpaced(ctx, "FOLLOW FOR MORE", cx, y, P(5), "center");
-    y += P(60);
-    ctx.fillStyle = th.text; ctx.font = F.display(hs);
-    for (const ln of hl) { fillSpaced(ctx, ln.toUpperCase(), cx, y + hs * 0.82, P(1), "center"); y += hs * 1.05; }
-    if (accent) {
-      ctx.fillStyle = th.accent; ctx.font = F.script(accSize); ctx.textAlign = "center";
-      ctx.fillText(accent, cx, y + accSize * 0.5); ctx.textAlign = "left"; y += accSize * 0.7;
-    }
+    y += P(36);
+    y = drawHeadScript(ctx, F, hl, hs, 1.05, P(1), cx, y, acc, slide.scriptPos, hsGap, th.text, th.accent);
     if (subLines.length) {
-      y += P(44); ctx.fillStyle = th.sub; ctx.font = F.body(P(28)); ctx.textAlign = "center";
+      y += P(44) + P(28) * 0.8; ctx.fillStyle = th.sub; ctx.font = F.body(P(28)); ctx.textAlign = "center";
       for (const ln of subLines) { ctx.fillText(ln, cx, y); y += P(28) * 1.4; }
+      ctx.textAlign = "left";
+    }
+  }
+
+  /* ---- DIAGRAM (heading + drawing + one short line) ---- */
+  else if (slide.template === "diagram") {
+    const footTop = h - P(196);
+    let y = top - P(40);
+    if ((slide.heading || "").trim()) {
+      const { size: ts, lines: tl } = fitText(ctx, slide.heading, width, P(200), 1.05, P(72), P(38), F.display);
+      const dAcc = (slide.accentWord || "").trim() ? scriptMetrics(ctx, F, slide.accentWord.trim(), Math.min(P(80), ts * 1.12), w - P(100)) : null;
+      y = drawHeadScript(ctx, F, tl, ts, 1.05, P(1.5), cx, y, dAcc, slide.scriptPos, P(16), th.text, th.accent) + P(40);
+    }
+    let capLines = [], cs = P(34);
+    if ((slide.caption || "").trim()) {
+      ctx.font = F.body(cs); capLines = wrapLines(ctx, slide.caption.trim(), width);
+      while (capLines.length > 3 && cs > P(26)) { cs -= P(1); ctx.font = F.body(cs); capLines = wrapLines(ctx, slide.caption.trim(), width); }
+    }
+    const capH = capLines.length ? capLines.length * cs * 1.4 + P(30) : 0;
+    const boxTop = y, boxBot = footTop - P(10) - capH;
+    const dleft = P(70), dw = w - P(140), dh = Math.max(P(100), boxBot - boxTop);
+    const parts = slide.svg ? diagramParts(slide.svg, th) : null;
+    let drawnBottom = boxTop + dh;
+    if (parts) {
+      const [vx, vy, vw, vh] = parts.vb;
+      const sc = Math.min(dw / vw, dh / vh);
+      const ox = dleft + (dw - vw * sc) / 2, oy = boxTop + (dh - vh * sc) / 2;
+      const img = getImg(parts.url);
+      if (img) ctx.drawImage(img, ox, oy, vw * sc, vh * sc);
+      for (const t of parts.texts) {
+        const isScript = /script/i.test(t.font), isBold = /bold|700|800|900/i.test(t.font);
+        const fs = t.size * sc;
+        ctx.font = isScript ? F.script(fs * 1.25) : isBold ? F.bodyMed(fs) : F.body(fs);
+        ctx.fillStyle = t.fill;
+        ctx.textAlign = t.anchor === "middle" ? "center" : t.anchor === "end" ? "right" : "left";
+        ctx.fillText(t.text, ox + (t.x - vx) * sc, oy + (t.y - vy) * sc);
+      }
+      ctx.textAlign = "left";
+      drawnBottom = oy + vh * sc;
+    } else {
+      ctx.strokeStyle = th.soft; ctx.lineWidth = P(3); ctx.setLineDash([P(14), P(10)]);
+      roundRect(ctx, dleft, boxTop, dw, dh, P(16)); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = th.sub; ctx.font = F.body(P(28)); ctx.textAlign = "center";
+      ctx.fillText("Paste a drawing to show it here", cx, boxTop + dh / 2); ctx.textAlign = "left";
+    }
+    if (capLines.length) {
+      let yy = drawnBottom + P(30) + cs * 0.8;
+      ctx.fillStyle = th.text; ctx.font = F.body(cs); ctx.textAlign = "center";
+      for (const ln of capLines) { ctx.fillText(ln, cx, yy); yy += cs * 1.4; }
       ctx.textAlign = "left";
     }
   }
@@ -561,14 +667,8 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
   /* ---- CHART (value | label reference table) — e.g. temperature chart ---- */
   else if (slide.template === "chart") {
     const { size: ts, lines: tl } = fitText(ctx, slide.title || "", width, P(220), 1.05, P(78), P(40), F.display);
-    let y = top + ts;
-    ctx.fillStyle = th.text;
-    for (const ln of tl) { fillSpaced(ctx, ln.toUpperCase(), cx, y, P(1.5), "center"); y += ts * 1.05; }
-    if ((slide.accentWord || "").trim()) {
-      const as = Math.min(P(86), ts * 1.15);
-      ctx.fillStyle = th.accent; ctx.font = F.script(as); ctx.textAlign = "center";
-      ctx.fillText(slide.accentWord.trim(), cx, y + as * 0.5); ctx.textAlign = "left"; y += as * 0.7;
-    }
+    const tAcc = (slide.accentWord || "").trim() ? scriptMetrics(ctx, F, slide.accentWord.trim(), Math.min(P(86), ts * 1.15), w - P(100)) : null;
+    let y = drawHeadScript(ctx, F, tl, ts, 1.05, P(1.5), cx, top, tAcc, slide.scriptPos, P(16), th.text, th.accent) + P(14);
     if ((slide.intro || "").trim()) {
       ctx.fillStyle = th.sub; ctx.font = F.body(P(25)); ctx.textAlign = "center";
       for (const ln of wrapLines(ctx, slide.intro.trim(), width)) { y += P(36); ctx.fillText(ln, cx, y); }
@@ -611,14 +711,8 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
   /* ---- COMPARE (two stacked panels w/ optional diagram) — e.g. bonds ---- */
   else if (slide.template === "compare") {
     const { size: ts, lines: tl } = fitText(ctx, slide.title || "", width, P(210), 1.05, P(76), P(38), F.display);
-    let y = top + ts;
-    ctx.fillStyle = th.text;
-    for (const ln of tl) { fillSpaced(ctx, ln.toUpperCase(), cx, y, P(1.5), "center"); y += ts * 1.05; }
-    if ((slide.accentWord || "").trim()) {
-      const as = Math.min(P(82), ts * 1.15);
-      ctx.fillStyle = th.accent; ctx.font = F.script(as); ctx.textAlign = "center";
-      ctx.fillText(slide.accentWord.trim(), cx, y + as * 0.5); ctx.textAlign = "left"; y += as * 0.7;
-    }
+    const tAcc = (slide.accentWord || "").trim() ? scriptMetrics(ctx, F, slide.accentWord.trim(), Math.min(P(82), ts * 1.15), w - P(100)) : null;
+    let y = drawHeadScript(ctx, F, tl, ts, 1.05, P(1.5), cx, top, tAcc, slide.scriptPos, P(16), th.text, th.accent) + P(14);
     y += P(30);
 
     const gap = P(46);
@@ -659,14 +753,8 @@ function renderSlide(ctx, w, slide, idx, total, brand, opts, getImg, monogramSrc
   /* ---- GUIDE (title + intro + 2x2 labeled grid) — e.g. density guide ---- */
   else if (slide.template === "guide") {
     const { size: ts, lines: tl } = fitText(ctx, slide.title || "", width, P(210), 1.05, P(76), P(38), F.display);
-    let y = top + ts;
-    ctx.fillStyle = th.text;
-    for (const ln of tl) { fillSpaced(ctx, ln.toUpperCase(), cx, y, P(1.5), "center"); y += ts * 1.05; }
-    if ((slide.accentWord || "").trim()) {
-      const as = Math.min(P(82), ts * 1.15);
-      ctx.fillStyle = th.accent; ctx.font = F.script(as); ctx.textAlign = "center";
-      ctx.fillText(slide.accentWord.trim(), cx, y + as * 0.5); ctx.textAlign = "left"; y += as * 0.7;
-    }
+    const tAcc = (slide.accentWord || "").trim() ? scriptMetrics(ctx, F, slide.accentWord.trim(), Math.min(P(82), ts * 1.15), w - P(100)) : null;
+    let y = drawHeadScript(ctx, F, tl, ts, 1.05, P(1.5), cx, top, tAcc, slide.scriptPos, P(16), th.text, th.accent) + P(14);
     if ((slide.intro || "").trim()) {
       ctx.fillStyle = th.sub; ctx.font = F.body(P(26)); ctx.textAlign = "center";
       for (const ln of wrapLines(ctx, slide.intro.trim(), width)) { y += P(37); ctx.fillText(ln, cx, y); }
@@ -761,6 +849,7 @@ const blankSlide = (template, theme = "cream") => {
     tip: { heading: "Your tip heading", accentWord: "", body: "Explain the science here in your own voice." },
     photo: { headline: "On-photo headline", accentWord: "", caption: "", image: null, layout: "full" },
     cta: { heading: "Save this for later", accentWord: "", subtext: "" },
+    diagram: { heading: "Your heading", accentWord: "", caption: "One short line explaining the drawing.", svg: '<svg viewBox="0 0 1000 620"><line x1="80" y1="200" x2="920" y2="200" stroke="#soft" stroke-width="40" stroke-linecap="round"/><path d="M500 200 C 500 320, 470 420, 500 560" fill="none" stroke="#ink" stroke-width="10" stroke-linecap="round"/><rect x="472" y="300" width="56" height="70" rx="14" fill="#accent"/><line x1="560" y1="335" x2="700" y2="335" stroke="#accent" stroke-width="4"/><text x="715" y="345" font-size="38" font-weight="bold">The bond</text><text x="80" y="150" font-size="34">Scalp</text><text x="530" y="560" font-size="40" font="script" fill="#accent">your hair</text></svg>' },
     chart: { title: "Styling Tool Temperatures", accentWord: "Density", intro: "", rows: "280° | Fine thin hair\n320° | Fine medium hair\n360° | Extension hair\n390° | Thick coarse hair\n430° | Please never use" },
     compare: { title: "Brushed vs Unbrushed Bonds", accentWord: "", headingA: "Brushed Bonds", bodyA: "Naturally shed hair lays in the direction of the hair and does not tangle.", imageA: null, headingB: "Unbrushed Bonds", bodyB: "Naturally shed hair tangles with other bonds and can cause matting and breakage.", imageB: null },
     guide: { title: "Bond Density Guide", accentWord: "", intro: "The density of the client's natural hair in a quarter-inch square determines the strand size to be used.", cells: "Standard Bond | For average density\nFine Bond | For lower density\nExtra Fine | For very fine hair\nCustom Bond | For unique density" },
@@ -780,10 +869,12 @@ function blankToTemplate(slide, template) {
   if (template === "tip") carry.heading = text || base.heading;
   if (template === "photo") carry.headline = text || base.headline;
   if (template === "cta") carry.heading = text || base.heading;
+  if (template === "diagram") carry.heading = text || base.heading;
   if (template === "chart") carry.title = text || base.title;
   if (template === "compare") carry.title = text || base.title;
   if (template === "guide") carry.title = text || base.title;
   if (slide.accentWord) carry.accentWord = slide.accentWord;
+  if (slide.scriptPos) carry.scriptPos = slide.scriptPos;
   return { ...base, ...carry, template };
 }
 
@@ -852,7 +943,7 @@ function App() {
   const [brands, setBrands] = useState({ miranda: { ...BRAND_PRESETS.miranda }, loves: { ...BRAND_PRESETS.loves } });
   const [brandKey, setBrandKey] = useState("miranda");
   const [monogram, setMonogram] = useState(null);
-  const [opts, setOpts] = useState({ frame: false, swipe: true, counter: true, monogram: true, scriptFont: "Oooh Baby" });
+  const [opts, setOpts] = useState({ frame: false, swipe: true, counter: true, monogram: true });
   const [ready, setReady] = useState(false);
   const [ver, setVer] = useState(0);
   const [panel, setPanel] = useState(null);
@@ -879,8 +970,7 @@ function App() {
     const faces = [
       "900 64px Montserrat", "800 64px Montserrat", "700 64px Montserrat",
       "600 64px 'Playfair Display'", "500 64px 'Playfair Display'", "italic 500 64px 'Playfair Display'",
-      "400 64px 'Oooh Baby'", "400 64px 'Shadows Into Light Two'", "400 64px 'Give You Glory'",
-      "400 64px 'Permanent Marker'", "400 64px Allura", "400 64px Sacramento",
+      "400 64px 'Shadows Into Light Two'",
       "400 64px Lato", "700 64px Lato",
     ];
     let alive = true;
@@ -905,7 +995,7 @@ function App() {
   // Preload all referenced images (slides + one-pager + brand logos + monogram).
   useEffect(() => {
     const srcs = [];
-    slides.forEach((s) => { if (s.image) srcs.push(s.image); if (s.avatar) srcs.push(s.avatar); });
+    slides.forEach((s) => { if (s.image) srcs.push(s.image); if (s.avatar) srcs.push(s.avatar); const d = diagramUrlFor(s); if (d) srcs.push(d); });
     [onePager.image, onePager.avatar, onePager.imageA, onePager.imageB].forEach((s) => { if (s) srcs.push(s); });
     Object.values(brands).forEach((b) => { if (b.logoImg) srcs.push(b.logoImg); });
     if (monogram) srcs.push(monogram);
@@ -971,6 +1061,7 @@ function App() {
     const tasks = [];
     if (s.image) tasks.push(loadImage(s.image).catch(() => {}));
     if (s.avatar) tasks.push(loadImage(s.avatar).catch(() => {}));
+    const dUrl = diagramUrlFor(s); if (dUrl) tasks.push(loadImage(dUrl).catch(() => {}));
     if (brand.logoImg) tasks.push(loadImage(brand.logoImg).catch(() => {}));
     if (monogram) tasks.push(loadImage(monogram).catch(() => {}));
     await Promise.all(tasks);
@@ -1028,14 +1119,17 @@ function App() {
       const slides = chunks.map((chunk) => chunk.trim()).filter(Boolean).map((chunk) => {
         const f = {}; let lastKey = null;
         chunk.split("\n").forEach((line) => {
-          const m = line.match(/^\s*([A-Za-z]+)\s*:\s*(.*)$/);
-          if (m) { lastKey = m[1].toUpperCase(); f[lastKey] = (m[2] || "").trim(); }
+          const m = line.match(/^\s*([A-Za-z_]+)\s*:\s*(.*)$/);
+          if (m && /^\s*</.test(line)) { if (lastKey) f[lastKey] += "\n" + line.trim(); return; }
+          if (m) { lastKey = m[1].toUpperCase().replace(/\s+/g, "_"); f[lastKey] = (m[2] || "").trim(); }
           else if (lastKey) { f[lastKey] += "\n" + line.trim(); } // continuation
         });
         const head = (f.HEADLINE || f.HEADING || f.TITLE || "").trim();
         const accent = (f.SCRIPT || f.ACCENT || "").trim();
         const body = (f.BODY || f.SUBTEXT || f.TEXT || "").trim();
         const t = norm[(f.TYPE || "").toLowerCase()] || (f.TYPE || "tip").toLowerCase();
+        const posRaw = (f.SCRIPT_POSITION || f.POSITION || f.SCRIPT_POS || "").toLowerCase();
+        const scriptPos = /top|above|over/.test(posRaw) ? "top" : "bottom";
         const theme = ["cream", "navy", "gold"].includes((f.THEME || "").toLowerCase()) ? f.THEME.toLowerCase() : null;
         const toSegs = (s) => (s || "").split(/\n|\s+\/\s+/).map((x) => x.trim()).filter(Boolean).join("\n");
         const toItems = (s) => (s || "").split(/\n|\s+\/\s+|;\s*/).map((x) => x.trim()).filter(Boolean).join("\n");
@@ -1046,7 +1140,9 @@ function App() {
         else if (t === "stat") o = { template: "stat", title: head, accentWord: accent, segments: toSegs(f.DATA || f.STATS || f.SEGMENTS) };
         else if (t === "statement") o = { template: "statement", text: (f.QUOTE || body), signature: (f.SIGNATURE || "").trim() };
         else if (t === "cta") o = { template: "cta", heading: head, accentWord: accent, subtext: body };
+        else if (t === "diagram" || t === "drawing") o = { template: "diagram", heading: head, accentWord: accent, caption: (f.CAPTION || body), svg: (f.DRAWING || f.SVG || f.DIAGRAM || "").replace(/\n/g, " ").trim() };
         else o = { template: "tip", heading: head, accentWord: accent, body };
+        o.scriptPos = scriptPos;
         o._theme = theme; // remember explicit theme (if any)
         return o;
       });
@@ -1078,7 +1174,7 @@ function App() {
   return (
     <div style={{ minHeight: "100vh", background: UI.bg, fontFamily: "Lato, sans-serif", color: UI.ink }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Lato:ital,wght@0,300;0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,500;0,600;1,500&family=Oooh+Baby&family=Shadows+Into+Light+Two&family=Give+You+Glory&family=Permanent+Marker&family=Allura&family=Sacramento&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Lato:ital,wght@0,300;0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,500;0,600;1,500&family=Shadows+Into+Light+Two&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-thumb { background: #D6CABB; border-radius: 3px; }
@@ -1135,22 +1231,6 @@ function App() {
             <p style={{ fontSize: 11.5, color: UI.sub, fontStyle: "italic", marginBottom: 12, lineHeight: 1.5 }}>
               Upload a single-color logo on a transparent background — it auto-recolors to contrast with every slide. The monogram stamps the top of your Cover slide.
             </p>
-            <label style={labelStyle}>Script accent font</label>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-              {["Oooh Baby", "Shadows Into Light Two", "Give You Glory", "Permanent Marker", "Allura", "Sacramento"].map((sf) => (
-                <button key={sf} onClick={() => setOpts({ ...opts, scriptFont: sf })}
-                  style={{
-                    padding: "6px 16px", borderRadius: 8, cursor: "pointer",
-                    border: `1px solid ${opts.scriptFont === sf ? UI.ink : UI.line}`,
-                    background: opts.scriptFont === sf ? UI.ink : "#FCFAF7",
-                    color: opts.scriptFont === sf ? "#FCF9F6" : UI.ink,
-                    fontFamily: `'${sf}', cursive`, fontSize: 26, lineHeight: 1.1,
-                  }}>Suck</button>
-              ))}
-            </div>
-            <p style={{ fontSize: 11.5, color: UI.sub, fontStyle: "italic", marginBottom: 14, lineHeight: 1.5 }}>
-              Stand-ins for your Benedict script — tap to preview each and pick the one you like. (Your real Benedict is a Canva-only font and can't be embedded in a web app.)
-            </p>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
               {[["frame", "Border frame"], ["swipe", "Swipe arrow"], ["counter", "Slide counter"], ["monogram", "Monogram on cover"]].map(([k, lbl]) => (
                 <label key={k} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer", color: UI.ink }}>
@@ -1172,7 +1252,7 @@ function App() {
               <button onClick={() => { setSlides(SEED); setSel(0); }} style={pillBtn(false)}>Reset to example</button>
             </div>
             <p style={{ fontSize: 11.5, color: UI.sub, fontStyle: "italic", marginTop: 8, lineHeight: 1.5 }}>
-              Separate slides with a line of <b>---</b>. TYPE can be cover, number, list, tip, stat, quote, or cta. Plain text (a blank line between slides) still works too. You can fine-tune any slide after building.
+              Separate slides with a line of <b>---</b>. TYPE can be cover, number, list, tip, diagram, stat, quote, or cta. Add <b>SCRIPT_POSITION: top</b> to put the script above the title. Plain text (a blank line between slides) still works too. You can fine-tune any slide after building.
             </p>
           </div>
         )}
@@ -1225,6 +1305,24 @@ function App() {
               ))}
             </div>
           </Field>
+
+          {slide.accentWord !== undefined && slide.template !== "photo" && (
+            <Field label="Script position">
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["top", "Above title"], ["bottom", "Below title"]].map(([v, lbl]) => {
+                  const on = (slide.scriptPos === "top") === (v === "top");
+                  return <button key={v} onClick={() => update({ scriptPos: v })} style={{ padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "Lato, sans-serif", border: `1px solid ${on ? UI.ink : UI.line}`, background: on ? UI.ink : "#FCFAF7", color: on ? "#FCF9F6" : UI.sub }}>{lbl}</button>;
+                })}
+              </div>
+            </Field>
+          )}
+
+          {slide.template === "diagram" && (<>
+            <LInput label="Heading (optional)" value={slide.heading} onChange={(v) => update({ heading: v })} ph="Where the itch starts" />
+            <LInput label="Script accent word (optional)" value={slide.accentWord} onChange={(v) => update({ accentWord: v })} ph="" />
+            <LArea label="Drawing (paste from Claude)" value={slide.svg} onChange={(v) => update({ svg: v })} ph="<svg viewBox=...>...</svg>" rows={4} />
+            <LArea label="One short line under the drawing" value={slide.caption} onChange={(v) => update({ caption: v })} ph="Tension pulls the follicle and the nerves fire." rows={2} />
+          </>)}
 
           {slide.template === "cover" && (<>
             <LInput label="Eyebrow (small top text)" value={slide.kicker} onChange={(v) => update({ kicker: v })} ph="Miranda | Hair Extension Expert & Salon Owner" />
